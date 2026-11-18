@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Analyse de sentiment des avis clients</title>
+<style>
+  :root {
+    --fond: #eef2f6; --carte: #ffffff; --texte: #18222d; --discret: #5b6875; --trait: #d3dbe4;
+    --pos: #1f8a4c; --pos-bg: #dff3e7;
+    --neg: #c23b3b; --neg-bg: #f9e0e0;
+    --neu: #a8700c; --neu-bg: #faeccd;
+    --accent: #23415f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--fond); color: var(--texte);
+         font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif; line-height: 1.5; }
+  main { max-width: 860px; margin: 0 auto; padding: 32px 18px 60px; }
+  h1 { font-size: 1.7rem; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sous-titre { color: var(--discret); margin: 0 0 24px; max-width: 60ch; }
+  section { background: var(--carte); border: 1px solid var(--trait); border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+  h2 { font-size: 1.05rem; margin: 0 0 12px; }
+  textarea { width: 100%; min-height: 110px; padding: 12px; font: inherit; border: 1px solid var(--trait);
+             border-radius: 8px; resize: vertical; }
+  textarea:focus-visible, button:focus-visible { outline: 3px solid #7aa7d6; outline-offset: 2px; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; align-items: center; }
+  button { font: inherit; cursor: pointer; border-radius: 8px; padding: 9px 18px; border: 1px solid var(--accent);
+           background: var(--accent); color: #fff; }
+  button.secondaire { background: #fff; color: var(--accent); }
+  button:disabled { opacity: .55; cursor: wait; }
+  #statut { font-size: .9rem; color: var(--discret); }
+  #resultat { margin-top: 16px; padding: 16px 18px; border-radius: 8px; border-left: 8px solid var(--trait);
+              background: var(--fond); min-height: 64px; }
+  #resultat .etiquette { font-size: 1.5rem; font-weight: 700; }
+  #resultat.positif { background: var(--pos-bg); border-color: var(--pos); color: var(--pos); }
+  #resultat.negatif { background: var(--neg-bg); border-color: var(--neg); color: var(--neg); }
+  #resultat.neutre  { background: var(--neu-bg); border-color: var(--neu); color: var(--neu); }
+  #resultat.erreur  { background: #fff; border-color: var(--neg); color: var(--neg); }
+  #resultat .detail { color: var(--discret); font-size: .9rem; }
+  table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--trait); vertical-align: top; }
+  th { font-weight: 600; color: var(--discret); }
+  .pastille { display: inline-block; padding: 1px 10px; border-radius: 99px; font-weight: 600; font-size: .85rem; }
+  .pastille.positif { background: var(--pos-bg); color: var(--pos); }
+  .pastille.negatif { background: var(--neg-bg); color: var(--neg); }
+  .pastille.neutre  { background: var(--neu-bg); color: var(--neu); }
+  .ok { color: var(--pos); font-weight: 700; } .ko { color: var(--neg); font-weight: 700; }
+  #score { margin-top: 12px; font-weight: 600; }
+  .table-scroll { overflow-x: auto; }
+  @media (prefers-reduced-motion: no-preference) { #resultat { transition: background .2s, border-color .2s; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Analyse de sentiment d'un avis client</h1>
+  <p class="sous-titre">Saisissez un avis : le modèle (TF-IDF + classifieur) indique s'il est positif, négatif ou neutre.</p>
+
+  <section aria-labelledby="t-saisie">
+    <h2 id="t-saisie">Votre avis</h2>
+    <textarea id="avis" placeholder="Ex. : The flight was great, thank you!"></textarea>
+    <div class="actions">
+      <button id="btn" onclick="analyser()">Analyser</button>
+      <span id="statut" role="status"></span>
+    </div>
+    <div id="resultat" aria-live="polite"><span class="detail">Le résultat s'affichera ici.</span></div>
+  </section>
+
+  <section aria-labelledby="t-batch">
+    <h2 id="t-batch">Test sur 10 avis (à documenter dans le rapport)</h2>
+    <p class="detail" style="color:var(--discret);margin-top:0">
+      Remplacez les avis ci-dessous par les vôtres si vous le souhaitez (variable <code>AVIS_TEST</code> dans le code),
+      puis lancez le test : le tableau compare la prédiction à l'étiquette attendue.
+    </p>
+    <button class="secondaire" id="btn-batch" onclick="testerTous()">Lancer les 10 tests</button>
+    <div id="score"></div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Avis</th><th>Attendu</th><th>Prédit</th><th>Confiance</th><th></th></tr></thead>
+        <tbody id="corps"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+  const API_URL = "http://localhost:5000/predict";
+
+  // 10 avis de test (3 positifs, 3 négatifs, 4 neutres) : à adapter / remplacer par les vôtres
+  const AVIS_TEST = [
+    { texte: "Great flight, friendly crew and we landed early. Thank you!", attendu: "positif" },
+    { texte: "Amazing service, the staff were so helpful. Love this airline.", attendu: "positif" },
+    { texte: "Smooth check-in and a comfortable seat, I would fly again.", attendu: "positif" },
+    { texte: "Terrible experience, my flight was delayed three hours and nobody helped.", attendu: "negatif" },
+    { texte: "Worst airline ever, they lost my bag and the staff were rude.", attendu: "negatif" },
+    { texte: "Cancelled flight with no refund, never flying with you again.", attendu: "negatif" },
+    { texte: "What is the baggage allowance for a domestic flight?", attendu: "neutre" },
+    { texte: "I booked a flight for Monday at 5pm.", attendu: "neutre" },
+    { texte: "Checking the status of my reservation.", attendu: "neutre" },
+    { texte: "Can I change my seat online?", attendu: "neutre" },
+  ];
+
+  const LIBELLES = { positif: "Positif", negatif: "Négatif", neutre: "Neutre" };
+
+  function echapper(s) {
+    const d = document.createElement("div"); d.textContent = s; return d.innerHTML;
+  }
+
+  async function predire(texte) {
+    const reponse = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ texte })
+    });
+    const data = await reponse.json();
+    if (!reponse.ok) throw new Error(data.erreur || "Erreur du serveur");
+    return data;
+  }
+
+  async function analyser() {
+    const texte = document.getElementById("avis").value.trim();
+    const zone = document.getElementById("resultat");
+    const btn = document.getElementById("btn");
+    if (!texte) {
+      zone.className = "erreur";
+      zone.innerHTML = "Saisissez un avis avant de lancer l'analyse.";
+      return;
+    }
+    btn.disabled = true;
+    document.getElementById("statut").textContent = "Analyse en cours…";
+    try {
+      const data = await predire(texte);
+      zone.className = data.sentiment;
+      const conf = data.confiance != null ? Math.round(data.confiance * 100) + " %" : "n/d";
+      zone.innerHTML = `<div class="etiquette">${LIBELLES[data.sentiment] || echapper(data.sentiment)}</div>
+                        <div class="detail">Confiance du modèle : ${conf}</div>`;
+    } catch (e) {
+      zone.className = "erreur";
+      zone.innerHTML = e instanceof TypeError
+        ? "Impossible de joindre l'API. Vérifiez que <code>python app.py</code> est lancé sur le port 5000."
+        : echapper(e.message);
+    } finally {
+      btn.disabled = false;
+      document.getElementById("statut").textContent = "";
+    }
+  }
+
+  async function testerTous() {
+    const btn = document.getElementById("btn-batch");
+    const corps = document.getElementById("corps");
+    btn.disabled = true; corps.innerHTML = "";
+    let bons = 0;
+    for (const { texte, attendu } of AVIS_TEST) {
+      let cellules;
+      try {
+        const d = await predire(texte);
+        const juste = d.sentiment === attendu;
+        if (juste) bons++;
+        const conf = d.confiance != null ? Math.round(d.confiance * 100) + " %" : "n/d";
+        cellules = `<td>${echapper(texte)}</td><td><span class="pastille ${attendu}">${LIBELLES[attendu]}</span></td>
+          <td><span class="pastille ${d.sentiment}">${LIBELLES[d.sentiment] || echapper(d.sentiment)}</span></td>
+          <td>${conf}</td><td class="${juste ? "ok" : "ko"}">${juste ? "✔" : "✘"}</td>`;
+      } catch (e) {
+        cellules = `<td>${echapper(texte)}</td><td colspan="4" class="ko">API injoignable</td>`;
+      }
+      corps.insertAdjacentHTML("beforeend", `<tr>${cellules}</tr>`);
+    }
+    document.getElementById("score").textContent = `${bons} / ${AVIS_TEST.length} avis correctement classés`;
+    btn.disabled = false;
+  }
+
+  document.getElementById("avis").addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) analyser();
+  });
+</script>
+</body>
+</html>
